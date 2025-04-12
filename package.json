@@ -1,0 +1,38 @@
+{
+  "name": "veilspire-shattered-legacy",
+  "description": "A text-based adventure game with combat, inventory management, animations and multiple levels!",
+  "version": "1.0.0",
+  "main": "index.js",
+  "bin": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "build": "pkg . --output \"VeilSpire Shattered Legacy.exe\""
+  },
+  "keywords": [
+    "game",
+    "adventure",
+    "text-based",
+    "cli",
+    "veilspire",
+    "veilspire-shattered-legacy"
+  ],
+  "author": "Hamood268",
+  "license": "MIT",
+  "dependencies": {
+    "chalk": "^4.1.2",
+    "inquirer": "^8.2.4"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.9",
+    "pkg": "^5.8.1"
+  },
+  "pkg": {
+    "assets": [
+      "src/**/*",
+      "src/config/**/*"
+    ],
+    "targets": [
+      "node18-win-x64"
+    ]
+  }
+}
