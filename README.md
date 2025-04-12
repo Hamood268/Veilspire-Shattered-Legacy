@@ -53,7 +53,7 @@
 1. **Install Node.js** (v18+)  
 2. **Clone Repository**:  
    ```bash  
-   git clone https://github.com/yourusername/veilspire-shattered-legacy.git  
+   git clone https://github.com/Hamood268/Veilspire-Shattered-Legacy.git  
    ```  
 3. **Install Dependencies**:  
    ```bash  
