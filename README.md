@@ -1,4 +1,3 @@
-```markdown
 # Veilspire: Shattered Legacy 
 
 ![Veilspire: Shattered Legacy](https://i.ibb.co/4vMjZw1/Veilspire-Shattered-Legacy.png)
