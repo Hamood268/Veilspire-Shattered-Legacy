@@ -110,7 +110,7 @@ const enemies = {
     dragon: {
         ...baseEnemy,
         name: 'Ancient Dragon',
-        health: 500,
+        health: 350,
         damage: 120,
         defense: 5,
         behavior: {

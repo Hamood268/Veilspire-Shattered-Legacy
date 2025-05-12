@@ -1,7 +1,7 @@
 {
   "name": "veilspire-shattered-legacy",
   "description": "A text-based adventure game with combat, inventory management, animations and multiple levels!",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "main": "index.js",
   "bin": "index.js",
   "scripts": {

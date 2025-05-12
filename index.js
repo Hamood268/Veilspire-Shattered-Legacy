@@ -1,6 +1,4 @@
 const AdventureGame = require('./src/game');
-const game = new AdventureGame();
-
 const MIN_NODE_VERSION = 18;
 
 try {
@@ -12,9 +10,9 @@ try {
   }
 
   // Start game
-  game.start();
+  const game = new AdventureGame();
+  game.mainMenu();
 
 } catch (error) {
   console.error('⚠️  Critical Error:', error.message);
 }
-

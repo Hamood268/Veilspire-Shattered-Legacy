@@ -29,6 +29,7 @@
 - Dynamically generated health bars and status displays
 
 ### ⚙️ Technical Features
+- **Save & Load game** Auto-save every 1 minute 
 - **Color-coded text** for better readability and immersion
 - **Animated sequences** for combat, item usage, and environmental transitions
 - **Persistent game state** tracking player progress, inventory, and world changes
@@ -77,8 +78,7 @@ Open to pull requests for any contribution
 
 --- 
 
-*Developed with passion by [Hamood268] | [GitHub](https://github.com/yourprofile) | [Discord](https://discord.com/users/804230882693087242) | [Paypal](https://paypal.me/Mohammed0268)*
-```
+*Developed with passion by [Hamood268]*
 
 My Socials:
 - GitHub: [github.com/hamood268](https://github.com/hamood268)

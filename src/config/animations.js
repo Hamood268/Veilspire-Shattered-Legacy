@@ -854,6 +854,20 @@ class GameAnimator {
     capitalizeFirstLetter(string) {
         return string.charAt(0).toUpperCase() + string.slice(1);
     }
+
+    async titleScreen(){
+        const SIMPLE_TITLE = chalk.red.bold(`
+            __      ________ _____ _       _____ _____ _____ _____  ______ 
+            \\ \\    / /  ____|_   _| |     / ____|  __ \\_   _|  __ \\|  ____|
+             \\ \\  / /| |__    | | | |    | (___ | |__) || | | |__) | |__   
+              \\ \\/ / |  __|   | | | |     \\___ \\|  ___/ | | |  _  /|  __|  
+               \\  /  | |____ _| |_| |____ ____) | |    _| |_| | \\ \\| |____ 
+                \\/   |______|_____|______|_____/|_|   |_____|_|  \\_\\______|
+                                                                           
+           `);
+        console.log(SIMPLE_TITLE);
+        return;
+    }
 }
 
 module.exports = GameAnimator;

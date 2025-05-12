@@ -1,31 +1,26 @@
 const readline = require('readline');
 const inquirer = require('inquirer');
 const chalk = require('chalk');
+const fs = require('fs');
+const path = require('path');
+const { promisify } = require('util');
+const os = require('os');
 const { gameMap, enemies, items } = require('./config/gameData');
 const GameAnimator = require('./config/animations');
+const writeFile = promisify(fs.writeFile);
+const readFile = promisify(fs.readFile);
 
 class AdventureGame {
     constructor() {
+        this.saveDir = path.join(path.join(this.getUserDataDir(), 'veilspire', 'saves'));
+        this.savePath = path.join(this.saveDir, 'savegame.json');
         this.rl = readline.createInterface({
             input: process.stdin,
             output: process.stdout
-          });
+        });
 
         //initiating player data
-        this.player = {
-            maxHealth: 100,
-            health: 100,
-            strength: 1,
-            defense: 0,
-            inventory: [],
-            defeatedEnemies: [],
-            enemiesDefeated: 0,
-            currentRoom: 'start',
-            hasWon: false,
-            isDead: false,
-            equippedItem: null,
-            equippedArmor: null,
-        }
+        this.player = this.createNewPlayer();
 
         // initating game data
         this.gameMap = gameMap;
@@ -34,6 +29,10 @@ class AdventureGame {
 
         //initating animations
         this.gameAnimator = new GameAnimator();
+
+        // Track game time
+        this.playTime = 0;
+        this.playTimer = null;
 
         this.roomsDirections = {
             'start': {
@@ -79,18 +78,302 @@ class AdventureGame {
         }
     }
 
-    async start() {
+    async mainMenu() {
+        try {
 
+            console.clear();
+
+            const hasSave = fs.existsSync(this.savePath);
+            let highestScore = 0;
+
+            if (hasSave) {
+                try {
+                    const rawData = await readFile(this.savePath, 'utf-8');
+                    const saveState = JSON.parse(rawData);
+                    highestScore = saveState.player.score?.total || 0;
+                } catch (scoreError) {
+                    console.error(chalk.red('Failed to read save file:', scoreError.message));
+                    console.error(chalk.grey.italic(scoreError.stack));
+                }
+            }
+
+            // Check current player's score as well (in case they are returning to menu mid-game)
+            if (this.player?.score?.total > highestScore) {
+                highestScore = this.player.score.total;
+            }
+            const scoreDisplay = new inquirer.Separator(`Highest Score: ${highestScore}`);
+
+            await this.gameAnimator.titleScreen();
+
+            const { menu } = await inquirer.prompt([
+                {
+                    type: 'list',
+                    name: 'menu',
+                    message: 'Welcome to Veilspire: Shattered Legacy',
+                    choices: [
+                        {
+                            name: 'Start a new game',
+                            value: 'new_game'
+                        },
+                        ...(hasSave ? [{
+                            name: 'Continue Journey',
+                            value: 'continue'
+                        }] : []),
+                        {
+                            name: 'Settings',
+                            value: 'settings'
+                        },
+                        {
+                            name: 'Quit',
+                            value: 'quit'
+                        },
+                        scoreDisplay
+                    ]
+                }]
+            )
+
+            switch (menu) {
+                case 'new_game':
+                    this.cleanupReadline();
+                    this.player = this.createNewPlayer();
+                    this.playTime = 0;
+                    await this.startGameSession();
+                    break;
+
+                case 'continue':
+                    const loaded = await this.loadGame();
+
+                    if (loaded) {
+                        this.cleanupReadline();
+                        await this.startGameSession();
+                    } else {
+                        console.log(chalk.grey.italic.bold('\nNo save available. Start new game...'));
+                        setTimeout(() => this.mainMenu(), 2000); // Return to menu after 2 seconds
+                    }
+                    break;
+
+                case 'settings':
+                    console.log(chalk.yellow('Coming soon! :)'));
+                    setTimeout(() => this.mainMenu(), 2000); // Return to menu after 2 seconds
+                    break;
+
+                case 'quit':
+                    await this.handleGameExit();
+                    break;
+            }
+
+        } catch (error) {
+            console.log(chalk.red('Failed to load main menu:', error.message));
+            console.error(chalk.grey(error.stack));
+
+            console.log(chalk.yellow('\nReturning to menu in 5 seconds...'));
+            setTimeout(() => this.mainMenu(), 5000);
+        }
+    };
+
+    cleanupReadline() {
+        if (this.rl) {
+            this.rl.removeAllListeners('line');
+            this.rl.close();
+        }
+    };
+
+    startGameTimer() {
+        if (this.playTimer) clearInterval(this.playTimer);
+        this.playTimer = setInterval(() => {
+            this.playTime++;
+        }, 1000);
+    };
+
+    createNewPlayer() {
+        return {
+            maxHealth: 100,
+            health: 100,
+            score: 0,
+            strength: 1,
+            defense: 0,
+            inventory: [],
+            defeatedEnemies: [],
+            enemiesDefeated: 0,
+            currentRoom: 'start',
+            hasWon: false,
+            isDead: false,
+            equippedItem: null,
+            equippedArmor: null,
+        };
+    };
+
+    async saveGame() {
+        try {
+
+            const score =
+                (this.player.enemiesDefeated * 100) +
+                (this.player.inventory.length * 50) +
+                this.player.health +
+                Math.max(0, 500 - Math.floor(this.playTime / 60));
+
+            this.player.score = {
+                total: score,
+                breakdown: { // Show score sources
+                    enemies: this.player.enemiesDefeated * 100,
+                    inventory: this.player.inventory.length * 50,
+                    healthBonus: this.player.health,
+                    timeBonus: Math.max(0, 500 - Math.floor(this.playTime / 60)) // -1pt/sec after 8.3min
+                }
+            };
+
+            // Create directory if it doesn't exist
+            if (!fs.existsSync(this.saveDir)) {
+                try {
+                    fs.mkdirSync(this.saveDir, { recursive: true });
+                } catch (mkdirError) {
+                    console.error(chalk.yellow(`Unable to create save directory: ${mkdirError.message}`));
+                    console.log(chalk.yellow(`Attempting to use temp directory instead...`));
+
+                    // Fallback to temp directory if we can't create our own
+                    this.saveDir = path.join(os.tmpdir(), 'veilspire-saves');
+                    this.savePath = path.join(this.saveDir, 'savegame.json');
+
+                    // Try again with temp directory
+                    if (!fs.existsSync(this.saveDir)) {
+                        fs.mkdirSync(this.saveDir, { recursive: true });
+                    }
+                }
+            }
+
+            const saveData = JSON.stringify({
+                version: 1.1,
+                timestamp: new Date().toISOString(),
+                player: this.player
+            }, null, 2);
+
+            await writeFile(this.savePath, saveData, 'utf-8');
+            console.log(chalk.grey.italic('\nGame saved successfully!'));
+            return true;
+        } catch (error) {
+            console.error(chalk.red('Failed to save game:', error.message));
+            console.error(chalk.grey(error.stack));
+            return false;
+        }
+    };
+
+    async loadGame() {
+        try {
+            const exists = fs.existsSync(this.savePath);
+            if (!exists) {
+                console.log(chalk.red('\nNo saved adventures found!'));
+                return false;
+            }
+            console.log(chalk.grey.italic('Loading saved game...'));
+
+            const rawData = await readFile(this.savePath, 'utf-8');
+            let saveState = JSON.parse(rawData);
+            const save_version = 1.1;
+
+            // Version migration system
+            if (saveState.version !== save_version) {
+                const migrated = await this.migrateSave(saveState, save_version);
+                if (!migrated) return false;
+                saveState = migrated;
+                console.log(chalk.yellow('Save file migrated to the latest version!'));
+            };
+
+            // validate player data
+            if (!saveState.player || !saveState.player.currentRoom) {
+                console.log(chalk.red('Invalid save data!'));
+                return false;
+            };
+
+            /// Safer merge with defaults
+            this.player = {
+                ...this.createNewPlayer(), // Fresh defaults
+                ...saveState.player,       // Saved data
+                hasWon: saveState.player.hasWon || false,
+                isDead: saveState.player.isDead || false
+            };
+
+            if (!this.player.score) {
+                const calculatedScore =
+                    (this.player.enemiesDefeated * 100) +
+                    (this.player.inventory.length * 50) +
+                    this.player.health;
+
+                this.player.score = {
+                    total: calculatedScore,
+                    breakdown: {
+                        enemies: this.player.enemiesDefeated * 100,
+                        inventory: this.player.inventory.length * 50,
+                        healthBonus: this.player.health,
+                        timeBonus: 0
+                    }
+                };
+            }
+
+            console.log(chalk.green('\nJourney resumed!'));
+            return true;
+
+        } catch (error) {
+            console.error(chalk.red('Failed to load game:', error.message));
+            console.error(chalk.grey(error.stack));
+
+            // Handle specific parsing errors
+            if (error instanceof SyntaxError) {
+                console.log(chalk.red('  The scrolls of your journey appear corrupted!'));
+                console.log(chalk.yellow('  Try starting a new adventure.'));
+            }
+
+            return false;
+        }
+    };
+
+    // Get the appropriate user data directory based on the operating system
+    getUserDataDir() {
+        // Check if the APPDATA environment variable is set (Windows)
+        switch (process.platform) {
+            case 'win32':
+                return process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming');
+            case 'darwin':
+                return path.join(os.homedir(), 'Library', 'Application Support');
+            default: // linux, freebsd, etc.
+                return path.join(os.homedir(), '.local', 'share');
+        }
+    }
+
+    async startGameSession() {
+        // Initialize new readline interface
+        this.rl = readline.createInterface({
+            input: process.stdin,
+            output: process.stdout
+        });
+
+        await this.start(); // Initial game setup
+        this.startAutoSave(); // Start autosave when game begins
+        await this.gameLoop(); // Start input handling
+
+    };
+
+    async start() {
+        console.clear();
         console.log(chalk.cyan('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━'));
         console.log(chalk.bold.yellow('       Welcome To Veilspire: Shattered Legacy       '));
         console.log(chalk.cyan('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━'));
         console.log('You find yourself in a mysterious dungeon. Explore, find treasures, and defeat the ancient dragon!');
         await this.displayHelp();
         await this.displayRoom();
+
+        // Start tracking play time
+        this.startGameTimer();
+
+        // Start auto-save feature
+        this.startAutoSave();
+
+        // Set up command input loop
         this.gameLoop();
-    }
+    };
 
     async gameLoop() {
+
+        this.rl.removeAllListeners('line'); // Clear previous listeners
 
         this.rl.on('line', async (input) => {
             const [command, ...args] = input.toLowerCase().split(' ');
@@ -126,11 +409,15 @@ class AdventureGame {
                 case 'help':
                     await this.displayHelp();
                     break;
+                case 'menu':
+                    await this.saveGame();
+                    await this.mainMenu();
+                    break;
                 case 'quit':
                     await this.handleGameExit();
                     break;
                 default:
-                    console.log(`Invalid command. Try: ${chalk.red('go')}, ${chalk.red('take')}, ${chalk.red('use')}, ${chalk.red('equip')}, ${chalk.red('inventory')}, ${chalk.red('look')}, ${chalk.red('status')}, ${chalk.red('quit')}`);
+                    console.log(`Invalid command. Try: ${chalk.red('go')}, ${chalk.red('take')}, ${chalk.red('use')}, ${chalk.red('equip')}, ${chalk.red('inventory')}, ${chalk.red('look')}, ${chalk.red('status')}, ${chalk.red('menu')}, ${chalk.red('quit')}`);
             }
         });
     };
@@ -195,18 +482,18 @@ class AdventureGame {
                 }
             }
 
-            if(currentRoom === 'west' && direction === 'door' || currentRoom === 'cave' && direction === 'door') {
+            if (currentRoom === 'west' && direction === 'door' || currentRoom === 'cave' && direction === 'door') {
                 await this.gameAnimator.animateRoomTransition('door');
             }
 
-            if(currentRoom === 'forest' && direction === 'up') {
+            if (currentRoom === 'forest' && direction === 'up') {
                 await this.gameAnimator.animateItemUse('climbing_rope');
                 await this.gameAnimator.animateRoomTransition('up');
                 await this.gameAnimator.animateEnvironment('mountain_climb');
                 await this.gameAnimator.animateItemUse('climbing_confirmation');
             }
 
-            if(currentRoom === 'cave' && direction === 'previous') {
+            if (currentRoom === 'cave' && direction === 'previous') {
                 // When descending mountains
                 await this.gameAnimator.animateRoomTransition('down');
                 await this.gameAnimator.animateEnvironment('mountain_descent');
@@ -227,13 +514,13 @@ class AdventureGame {
 
             // handle enemy encounters
             if (roomData.enemy) {
-                
+
                 const spawnEnemy = (room) => {
                     if (room.enemy && !room.enemyInstance) {
                         room.enemyInstance = structuredClone(this.enemies[room.enemy]);
                     }
                 };
-                
+
                 // Capture target room reference to avoid race conditions
                 const targetRoomRef = this.gameMap[targetRoom];
                 setTimeout(async () => {
@@ -252,8 +539,10 @@ class AdventureGame {
 
     async displayRoom() {
         try {
+
             const room = this.gameMap[this.player.currentRoom];
             const connections = this.roomsDirections[this.player.currentRoom];
+
 
             if (!connections) {
                 throw new Error(`No exits found for room: ${this.player.currentRoom}`);
@@ -330,6 +619,11 @@ class AdventureGame {
 
             if (!room.items.includes(itemCodename)) {
                 console.log(chalk.red('There is no such item here!'));
+                return;
+            }
+
+            if (this.player.inventory.includes(itemCodename)) {
+                console.log(chalk.magenta.italic(`You already have ${itemData.name} in your inventory!`));
                 return;
             }
 
@@ -589,6 +883,7 @@ class AdventureGame {
             if (room.enemyInstance.dropItems?.length > 0) {
                 this.player.inventory.push(...room.enemyInstance.dropItems);
                 console.log(chalk.green(`Loot obtained:\n- ${room.enemyInstance.dropItems.join('\n- ')}`));
+                console.log(chalk.red.italic(`player Health: ${this.player.health}/${this.player.maxHealth}`));
             }
 
             // Update game state
@@ -620,26 +915,31 @@ class AdventureGame {
 
     async handleGameEnd() {
         try {
+
+            // Clean up timers
+            if (this.playTimer) clearInterval(this.playTimer);
+            if (this.autoSaveTimer) clearInterval(this.autoSaveTimer);
+            await this.saveGame();
+
             if (this.player.isDead) return;
-    
+
             if (this.player.health === 0) {
                 this.player.health = 0;
                 this.player.isDead = true;
-    
+
                 console.log(chalk.red.bold('\nYou have been defeated...'));
                 await this.gameAnimator.animatePlayerDeath();
+                console.log(chalk.yellow(`Final Score: ${this.player.score?.total || 0}`));
                 await this.restartPrompt();
                 return;
             }
-    
-            // if (this.player.hasWon === true) {
-            //     console.log(chalk.yellow.bold('\nCONGRATULATIONS! YOU HAVE WON!'));
-            // }
+
 
             if (this.checkAllEnemiesDefeated()) {
                 console.log(chalk.yellow.bold('\nAll enemies vanquished! Peace restored!'));
+                console.log(chalk.yellow(`Final Score: ${this.player.score?.total || 0}`));
             }
-            
+
         } catch (error) {
             console.log(chalk.red('failed to end the game'))
             console.log(chalk.grey(`${error.stack}`));
@@ -656,49 +956,33 @@ class AdventureGame {
 
     async restartPrompt() {
         try {
+
+            let choices = ['Go to main menu', 'Quit']
+
+            if (this.player.isDead === true) {
+                choices.unshift('Restart from last save')
+            };
+
             const { end } = await inquirer.prompt([
                 {
                     type: 'list',
                     name: 'end',
-                    message: 'Game over! Play again?',
-                    choices: ['Yes', 'No']
-                }
-            ]);
+                    message: 'Game over! What do you want to do?',
+                    choices: choices
+                }]);
 
-            if (end === 'Yes') {
-                if (this.rl) {
-                    this.rl.close();
-                }
-    
-                // Create NEW interface instance
-                this.rl = readline.createInterface({
-                    input: process.stdin,
-                    output: process.stdout
-                });
-
-                // Reset the game
-                this.player = {
-                    maxHealth: 100,
-                    health: 100,
-                    strength: 1,
-                    defense: 0,
-                    inventory: [],
-                    enemiesDefeated: 0,
-                    currentRoom: 'start',
-                    hasWon: false,
-                    isDead: false,
-                    equippedItem: null,
-                    equippedArmor: null,
-                };
-
-                 // Clear previous gameLoop listeners
-                this.rl.removeAllListeners('line');
-
-                await this.start();
-                this.gameLoop();
+            if (end === 'Restart from last save') {
+                await this.loadGame();
+                this.cleanupReadline();
+                await this.startGameSession();
+                return;
+            } else if (end === 'Go to main menu') {
+                this.cleanupReadline();
+                await this.mainMenu();
+                return;
             } else {
                 await this.handleGameExit();
-            }
+            };
 
         } catch (error) {
             console.log(chalk.red(`Failed to handle game end: ${error.message}`));
@@ -707,6 +991,12 @@ class AdventureGame {
     }
 
     async handleGameExit() {
+        console.log(chalk.yellow('Saving before exit...'));
+        await this.saveGame();
+        // Clean up timers
+        if (this.playTimer) clearInterval(this.playTimer);
+        if (this.autoSaveTimer) clearInterval(this.autoSaveTimer);
+
         console.log(chalk.yellowBright(`
             ╔══════════════════════════════╗
             ║  Thanks for playing!         ║
@@ -716,7 +1006,7 @@ class AdventureGame {
             
             `));
 
-        let countdown = 15;
+        let countdown = 10;
 
         const quitInterval = setInterval(() => {
             console.log(chalk.cyan(
@@ -738,6 +1028,16 @@ class AdventureGame {
 
     handleForceExit() {
         console.log(chalk.red('Emergency shutdown!'));
+        console.log(chalk.red('Saving game state...'));
+        this.saveGame();
+        console.log(chalk.red('Game state saved.'));
+
+        // Clean up timers
+        if (this.playTimer) clearInterval(this.playTimer);
+        if (this.autoSaveTimer) clearInterval(this.autoSaveTimer);
+
+        console.log(chalk.yellow(`Final Score: ${this.player.score?.total || 0}`));
+
         console.log(chalk.yellowBright(`
             ╔══════════════════════════════╗
             ║  Thanks for playing!         ║
@@ -746,7 +1046,7 @@ class AdventureGame {
             ╚══════════════════════════════╝
             
             `));
-        let countdown = 15;
+        let countdown = 10;
 
         const quitInterval = setInterval(() => {
             console.log(chalk.cyan(
@@ -776,6 +1076,7 @@ class AdventureGame {
         console.log(`  ${chalk.green.bold('inventory')} - Show your inventory`);
         console.log(`  ${chalk.green.bold('status')} - Show your health and player stats`);
         console.log(`  ${chalk.green.bold('help')} - Show this help menu`);
+        console.log(`  ${chalk.green.bold('menu')} - Goes to the main menu`);
         console.log(`  ${chalk.green.bold('quit')} - Quit the game`);
     }
 
@@ -785,6 +1086,8 @@ class AdventureGame {
         console.log(`Strength: ${this.player.strength}`);
         console.log(`Defense: ${this.player.defense}`);
         console.log(`Enemies Defeated: ${this.player.enemiesDefeated}`);
+        console.log(`Score: ${this.player.score?.total || 0}`);
+        console.log(`Time Played: ${this.playTime} seconds`);
         console.log(`Inventory: ${this.player.inventory.length} items`);
         console.log('Equipped:',
             chalk.hex('#d8d8d8')(this.items[this.player.equippedItem]?.name || 'None'), '/',
@@ -792,6 +1095,50 @@ class AdventureGame {
         );
         console.log(chalk.yellow('───────────────────────\n'));
     }
+
+    calculateLegacyScore(playerData) {
+        // Backfill score for old saves
+        return (playerData.enemiesDefeated || 0) * 100 +
+            (playerData.inventory?.length || 0) * 50 +
+            (playerData.health || 0);
+    }
+
+    startAutoSave(interval = 60000) { // 1 minutes
+        if (this.autoSaveTimer) clearInterval(this.autoSaveTimer);
+
+        this.autoSaveTimer = setInterval(async () => {
+            if (this.player.hasWon || this.player.isDead) {
+                clearInterval(this.autoSaveTimer);
+                return;
+            }
+
+            try {
+                console.log(chalk.grey.italic('\nAuto-saving...'));
+                await this.saveGame();
+            } catch (autoSaveError) {
+                console.error(chalk.red('\nAuto-save failed:'), autoSaveError.message);
+            }
+        }, interval);
+    };
+
+    async migrateSave(oldSave, save_version) {
+        try {
+            console.log(chalk.yellow(`\nMigrating save from version ${oldSave.version}...`));
+
+            // Add migration paths here
+            if (oldSave.version < 1.1) {
+                oldSave.player.score = this.calculateLegacyScore(oldSave.player);
+            }
+
+            // Update version after migration
+            oldSave.version = save_version;
+            return oldSave;
+
+        } catch (migrationError) {
+            console.error(chalk.red('Migration failed:'), migrationError.message);
+            return null;
+        }
+    };
 }
 
 module.exports = AdventureGame;
